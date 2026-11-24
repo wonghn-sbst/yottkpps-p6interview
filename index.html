@@ -233,7 +233,7 @@
 
         <div id="lock-error-msg" class="hidden text-xs font-bold text-[#ff85b3] bg-[#ff2a85]/15 border border-[#ff2a85]/60 rounded-xl px-3.5 py-2.5"></div>
 
-        <button type="submit" class="arcade-btn w-full py-3 rounded-xl bg-gradient-to-r from-[#ff2a85] to-[#b967ff] text-white font-black text-sm border-2 border-white/20">
+        <button type="submit" id="lock-submit-btn" class="arcade-btn w-full py-3 rounded-xl bg-gradient-to-r from-[#ff2a85] to-[#b967ff] text-white font-black text-sm border-2 border-white/20 disabled:opacity-60">
           🚀 驗證並開始冒險
         </button>
       </form>
@@ -272,6 +272,7 @@
             <div class="flex flex-wrap items-center gap-2 mt-0.5">
               <span class="text-[11px] sm:text-xs text-slate-400">小六升中面試・互動闖關訓練室</span>
               <span id="hud-title-badge" class="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#ffd700]/15 border border-[#ffd700]/50 text-[#ffd700]">🌱 面試見習生</span>
+              <span id="hud-cloud-badge" class="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-600 text-slate-300" title="雲端同步狀態">💾 單機模式</span>
             </div>
           </div>
         </div>
@@ -1161,12 +1162,19 @@
         </div>
       </div>
 
+      <div id="profile-cloud-status" class="text-xs text-slate-300 bg-[#0b0c15] rounded-xl px-3.5 py-2.5 border border-slate-800 flex items-center justify-between gap-2">
+        <span id="profile-cloud-text">💾 目前為單機儲存模式</span>
+        <button type="button" id="profile-sync-btn" onclick="manualCloudSync()" class="hidden arcade-btn px-2.5 py-1 rounded-lg bg-[#00e5ff]/20 border border-[#00e5ff] text-[#00e5ff] font-bold text-[11px]">
+          🔄 立即同步
+        </button>
+      </div>
+
       <p class="text-xs text-slate-400 leading-relaxed">
-        💾 系統會自動儲存你嘅通關星星、金幣、稱號、成語庫及每題速記草稿。共用平板練習完記得登出切換帳號！
+        ☁️ 系統會自動儲存你嘅通關星星、金幣、稱號、成語庫及每題速記草稿。共用平板練習完記得登出切換帳號！
       </p>
 
       <div class="flex gap-2.5 pt-1">
-        <button type="button" onclick="logoutAccount()" class="arcade-btn flex-1 py-2.5 rounded-xl bg-[#ff2a85] text-white font-black text-sm">
+        <button type="button" id="profile-logout-btn" onclick="logoutAccount()" class="arcade-btn flex-1 py-2.5 rounded-xl bg-[#ff2a85] text-white font-black text-sm disabled:opacity-60">
           🚪 登出並切換帳號
         </button>
         <button type="button" onclick="closeProfileModal()" class="arcade-btn px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-600 text-slate-200 font-bold text-sm">
@@ -1182,9 +1190,12 @@
       <div class="p-4 sm:p-5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-[#1a1f38]">
         <div>
           <h2 id="dashboard-title" class="text-lg sm:text-xl font-black neon-text-green">📊 班級學生練習進度總覽</h2>
-          <p class="text-xs text-slate-400 mt-0.5">檢視本裝置已登入練習之學生紀錄及匯出 CSV 報表</p>
+          <p id="dashboard-subtitle" class="text-xs text-slate-400 mt-0.5">檢視雲端及本裝置已登入練習之學生紀錄，支援匯出 CSV 報表</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <button type="button" id="dashboard-refresh-btn" onclick="refreshDashboardFromCloud()" class="hidden arcade-btn px-3 py-1.5 rounded-xl bg-[#00e5ff]/20 border border-[#00e5ff] text-[#00e5ff] font-bold text-xs sm:text-sm disabled:opacity-60">
+            🔄 同步雲端
+          </button>
           <button type="button" onclick="exportProgressCSV()" class="arcade-btn px-3.5 py-1.5 rounded-xl bg-[#00ff9d]/20 border border-[#00ff9d] text-[#00ff9d] font-bold text-xs sm:text-sm">
             📥 匯出 CSV
           </button>
@@ -1243,6 +1254,14 @@
 
   <!-- ==================== JavaScript 核心邏輯 ==================== -->
   <script>
+    /* =====================================================================
+       ★★★ Google Sheets 雲端跨裝置同步設定 ★★★
+       請將你在 Google Apps Script 部署後獲得的「網頁應用程式網址」
+       （以 https://script.google.com/macros/s/.../exec 結尾）
+       貼在下方單引號內。若留空 '' 則維持原本單機儲存模式。
+       ===================================================================== */
+    const GOOGLE_SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbzRp8irVOmsbZG1MUdFGH8M-tI076P2WIQxn6c5yFNO/dev';
+
     /* =====================================================================
 0. 復古像素金幣 SVG 圖示工具（確保全平台清晰顯示，不再變方格）
        ===================================================================== */
@@ -2338,6 +2357,163 @@
 
     let storageAvailable = true;
     let memoryUsersDB = {};
+    let cloudSyncTimer = null;
+    let pendingCloudPayload = null;
+    let cloudStatusState = 'local'; // 'local' | 'syncing' | 'synced' | 'error'
+
+    function isCloudEnabled() {
+      return typeof GOOGLE_SHEET_API_URL === 'string' &&
+        GOOGLE_SHEET_API_URL.trim().startsWith('https://script.google.com/');
+    }
+
+    function setCloudBadge(status, customText) {
+      cloudStatusState = status;
+      const badge = document.getElementById('hud-cloud-badge');
+      const profileText = document.getElementById('profile-cloud-text');
+      const profileSyncBtn = document.getElementById('profile-sync-btn');
+
+      const map = {
+        local: {
+          text: customText || '💾 單機模式',
+          cls: 'text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-600 text-slate-300',
+          pText: '💾 目前為單機儲存模式（未設定 Google Sheets 網址）'
+        },
+        syncing: {
+          text: customText || '☁️ 同步中...',
+          cls: 'text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#00e5ff]/15 border border-[#00e5ff]/60 text-[#00e5ff]',
+          pText: '☁️ 正在與 Google Sheets 雲端同步...'
+        },
+        synced: {
+          text: customText || '☁️ 雲端已同步',
+          cls: 'text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#00ff9d]/15 border border-[#00ff9d]/60 text-[#00ff9d]',
+          pText: '☁️ 已連接 Google Sheets，紀錄跨裝置自動同步'
+        },
+        error: {
+          text: customText || '⚠️ 雲端暫離線',
+          cls: 'text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#ffd700]/15 border border-[#ffd700]/60 text-[#ffd700]',
+          pText: '⚠️ 暫時無法連線至雲端，目前改以本機暫存'
+        }
+      };
+
+      const cfg = map[status] || map.local;
+      if (badge) {
+        badge.textContent = cfg.text;
+        badge.className = cfg.cls;
+      }
+      if (profileText) {
+        profileText.textContent = cfg.pText;
+      }
+      if (profileSyncBtn) {
+        if (isCloudEnabled() && currentSession.role !== 'guest') {
+          profileSyncBtn.classList.remove('hidden');
+        } else {
+          profileSyncBtn.classList.add('hidden');
+        }
+      }
+    }
+
+    async function fetchWithTimeout(url, options = {}, timeoutMs = 9000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        return res;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function cloudGetUser(key) {
+      if (!isCloudEnabled() || !key) return { ok: false, offline: true };
+      try {
+        const url = `${GOOGLE_SHEET_API_URL.trim()}?action=getUser&key=${encodeURIComponent(key)}&_t=${Date.now()}`;
+        const res = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow' }, 9000);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        return data;
+      } catch (e) {
+        return { ok: false, offline: true, error: String(e) };
+      }
+    }
+
+    async function cloudGetAllUsers() {
+      if (!isCloudEnabled()) return { ok: false, offline: true };
+      try {
+        const url = `${GOOGLE_SHEET_API_URL.trim()}?action=getAll&_t=${Date.now()}`;
+        const res = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow' }, 12000);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        return data;
+      } catch (e) {
+        return { ok: false, offline: true, error: String(e) };
+      }
+    }
+
+    async function cloudSaveUser(key, record, keepalive = false) {
+      if (!isCloudEnabled() || !key || !record) return false;
+      setCloudBadge('syncing');
+      try {
+        const payload = JSON.stringify({ action: 'saveUser', key, record });
+        const opts = {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: payload,
+          redirect: 'follow'
+        };
+        if (keepalive) opts.keepalive = true;
+        const res = await fetchWithTimeout(GOOGLE_SHEET_API_URL.trim(), opts, 9000);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && data.ok) {
+          setCloudBadge('synced');
+          return true;
+        }
+        throw new Error((data && data.error) || 'Cloud save failed');
+      } catch (e) {
+        setCloudBadge('error');
+        return false;
+      }
+    }
+
+    function scheduleCloudSync(key, record, debounce = false) {
+      if (!isCloudEnabled() || !key) return Promise.resolve(false);
+      pendingCloudPayload = { key, record };
+      if (cloudSyncTimer) {
+        clearTimeout(cloudSyncTimer);
+        cloudSyncTimer = null;
+      }
+      if (debounce) {
+        setCloudBadge('syncing', '☁️ 待同步...');
+        return new Promise((resolve) => {
+          cloudSyncTimer = setTimeout(async () => {
+            cloudSyncTimer = null;
+            const item = pendingCloudPayload;
+            pendingCloudPayload = null;
+            if (item) {
+              resolve(await cloudSaveUser(item.key, item.record));
+            } else {
+              resolve(false);
+            }
+          }, 1500);
+        });
+      }
+      const item = pendingCloudPayload;
+      pendingCloudPayload = null;
+      return cloudSaveUser(item.key, item.record);
+    }
+
+    async function flushCloudSync() {
+      if (cloudSyncTimer) {
+        clearTimeout(cloudSyncTimer);
+        cloudSyncTimer = null;
+      }
+      if (pendingCloudPayload) {
+        const item = pendingCloudPayload;
+        pendingCloudPayload = null;
+        return await cloudSaveUser(item.key, item.record);
+      }
+      return true;
+    }
 
     function checkStorageAvailable() {
       try {
@@ -2388,36 +2564,89 @@
       return '';
     }
 
+    function buildCurrentRecord() {
+      const isStudent = currentSession.role === 'student';
+      const titleObj = getEquippedTitleObj();
+      return {
+        role: currentSession.role,
+        isStaff: !isStudent,
+        className: isStudent ? currentSession.className : (currentSession.role === 'teacher' ? currentSession.className : ''),
+        studentNo: isStudent ? Number(currentSession.studentNo) : 0,
+        name: currentSession.name,
+        coins: state.coins,
+        completedIds: state.completedIds,
+        drafts: state.drafts,
+        unlockedTitles: state.unlockedTitles,
+        equippedTitle: state.equippedTitle,
+        titleName: titleObj ? titleObj.name : '🌱 面試見習生',
+        unlockedIdiomPacks: state.unlockedIdiomPacks,
+        lastActive: new Date().toLocaleString('zh-HK', { hour12: false }),
+        updatedAt: Date.now()
+      };
+    }
+
+    function applyRecordToState(rec) {
+      if (rec) {
+        state.coins = Number(rec.coins) || (isTeacherOrAdmin() ? 999 : 0);
+        state.completedIds = Array.isArray(rec.completedIds) ? rec.completedIds : [];
+        state.drafts = rec.drafts || {};
+        state.unlockedTitles = isTeacherOrAdmin()
+          ? SHOP_TITLES.map(t => t.id)
+          : (Array.isArray(rec.unlockedTitles) && rec.unlockedTitles.length ? rec.unlockedTitles : ['t_novice']);
+        state.equippedTitle = rec.equippedTitle || (isTeacherOrAdmin() ? 't_grandmaster' : 't_novice');
+        state.unlockedIdiomPacks = isTeacherOrAdmin()
+          ? IDIOM_PACKS.map(p => p.id)
+          : (Array.isArray(rec.unlockedIdiomPacks) ? rec.unlockedIdiomPacks : []);
+      } else {
+        state.coins = isTeacherOrAdmin() ? 999 : 0;
+        state.completedIds = [];
+        state.drafts = {};
+        state.unlockedTitles = isTeacherOrAdmin() ? SHOP_TITLES.map(t => t.id) : ['t_novice'];
+        state.equippedTitle = isTeacherOrAdmin() ? 't_grandmaster' : 't_novice';
+        state.unlockedIdiomPacks = isTeacherOrAdmin() ? IDIOM_PACKS.map(p => p.id) : [];
+      }
+      updateHUD();
+    }
+
+    function pickBestRecord(localRec, cloudRec) {
+      if (cloudRec && !localRec) return { rec: cloudRec, source: 'cloud' };
+      if (localRec && !cloudRec) return { rec: localRec, source: 'local' };
+      if (!localRec && !cloudRec) return { rec: null, source: 'none' };
+
+      const cTime = Number(cloudRec.updatedAt) || 0;
+      const lTime = Number(localRec.updatedAt) || 0;
+      if (cTime > 0 && lTime > 0) {
+        return cTime >= lTime ? { rec: cloudRec, source: 'cloud' } : { rec: localRec, source: 'local' };
+      }
+      if (cTime > 0 && lTime === 0) {
+        const lDone = (localRec.completedIds || []).length;
+        const cDone = (cloudRec.completedIds || []).length;
+        return lDone > cDone ? { rec: localRec, source: 'local' } : { rec: cloudRec, source: 'cloud' };
+      }
+      const lDone = (localRec.completedIds || []).length;
+      const cDone = (cloudRec.completedIds || []).length;
+      return cDone >= lDone ? { rec: cloudRec, source: 'cloud' } : { rec: localRec, source: 'local' };
+    }
+
     function loadUserProgress() {
       const key = getAccountStorageKey();
       if (key) {
         const db = getAllUsersDB();
         const rec = db[key];
         if (rec) {
-          state.coins = Number(rec.coins) || (isTeacherOrAdmin() ? 999 : 0);
-          state.completedIds = Array.isArray(rec.completedIds) ? rec.completedIds : [];
-          state.drafts = rec.drafts || {};
-          state.unlockedTitles = isTeacherOrAdmin()
-            ? SHOP_TITLES.map(t => t.id)
-            : (Array.isArray(rec.unlockedTitles) && rec.unlockedTitles.length ? rec.unlockedTitles : ['t_novice']);
-          state.equippedTitle = rec.equippedTitle || (isTeacherOrAdmin() ? 't_grandmaster' : 't_novice');
-          state.unlockedIdiomPacks = isTeacherOrAdmin()
-            ? IDIOM_PACKS.map(p => p.id)
-            : (Array.isArray(rec.unlockedIdiomPacks) ? rec.unlockedIdiomPacks : []);
+          applyRecordToState(rec);
           if (currentSession.name) rec.name = currentSession.name;
           rec.lastActive = new Date().toLocaleString('zh-HK', { hour12: false });
           db[key] = rec;
           saveAllUsersDB(db);
         } else {
-          state.coins = isTeacherOrAdmin() ? 999 : 0;
-          state.completedIds = [];
-          state.drafts = {};
-          state.unlockedTitles = isTeacherOrAdmin() ? SHOP_TITLES.map(t => t.id) : ['t_novice'];
-          state.equippedTitle = isTeacherOrAdmin() ? 't_grandmaster' : 't_novice';
-          state.unlockedIdiomPacks = isTeacherOrAdmin() ? IDIOM_PACKS.map(p => p.id) : [];
-          saveProgress();
+          applyRecordToState(null);
+          // 僅在未啟用雲端時立即初始化，避免雲端尚未讀取前以空白覆蓋舊紀錄
+          if (!isCloudEnabled()) {
+            saveProgress({ skipCloud: true });
+          }
         }
-        if (!storageAvailable) {
+        if (!storageAvailable && !isCloudEnabled()) {
           setTimeout(() => {
             showToast('⚠️ 目前瀏覽器限制本機存檔，進度僅暫存於此分頁（請勿關閉分頁）', '#ffd700');
           }, 600);
@@ -2429,31 +2658,89 @@
         state.unlockedTitles = ['t_novice'];
         state.equippedTitle = 't_novice';
         state.unlockedIdiomPacks = [];
+        updateHUD();
       }
-      updateHUD();
+      if (!isCloudEnabled()) {
+        setCloudBadge('local');
+      }
     }
 
-    function saveProgress() {
+    async function syncCurrentUserFromCloud(showNotify = false) {
+      const key = getAccountStorageKey();
+      if (!key) return;
+      if (!isCloudEnabled()) {
+        setCloudBadge('local');
+        loadUserProgress();
+        return;
+      }
+
+      setCloudBadge('syncing');
+      const db = getAllUsersDB();
+      const localRec = db[key] || null;
+      const res = await cloudGetUser(key);
+
+      if (res && res.ok) {
+        const cloudRec = res.found && res.record ? res.record : null;
+        const { rec: chosen, source } = pickBestRecord(localRec, cloudRec);
+
+        if (chosen) {
+          applyRecordToState(chosen);
+          const mergedRec = {
+            ...chosen,
+            name: currentSession.name || chosen.name,
+            lastActive: new Date().toLocaleString('zh-HK', { hour12: false })
+          };
+          db[key] = mergedRec;
+          saveAllUsersDB(db);
+          if (source === 'local') {
+            await cloudSaveUser(key, buildCurrentRecord());
+          } else {
+            setCloudBadge('synced');
+          }
+        } else {
+          applyRecordToState(null);
+          await saveProgress();
+        }
+
+        renderQuestionList();
+        if (state.currentStep === 3) renderStep3(getCurrentQuestion());
+        if (state.currentStep === 4) renderStep4(getCurrentQuestion());
+        if (showNotify) {
+          showToast('☁️ 已完成 Google Sheets 雲端同步！');
+        }
+      } else {
+        // 雲端暫時離線，退回本機快取
+        setCloudBadge('error');
+        loadUserProgress();
+        if (showNotify) {
+          showToast('⚠️ 無法連線至 Google Sheets，暫以本機紀錄顯示', '#ffd700');
+        }
+      }
+    }
+
+    async function manualCloudSync() {
+      if (!isCloudEnabled() || currentSession.role === 'guest') return;
+      playSFX('blip');
+      await flushCloudSync();
+      await syncCurrentUserFromCloud(true);
+      openProfileModal();
+    }
+
+    function saveProgress(options = {}) {
       const key = getAccountStorageKey();
       if (key) {
         const db = getAllUsersDB();
-        const isStudent = currentSession.role === 'student';
-        db[key] = {
-          isStaff: !isStudent,
-          className: isStudent ? currentSession.className : '',
-          studentNo: isStudent ? Number(currentSession.studentNo) : 0,
-          name: currentSession.name,
-          coins: state.coins,
-          completedIds: state.completedIds,
-          drafts: state.drafts,
-          unlockedTitles: state.unlockedTitles,
-          equippedTitle: state.equippedTitle,
-          unlockedIdiomPacks: state.unlockedIdiomPacks,
-          lastActive: new Date().toLocaleString('zh-HK', { hour12: false })
-        };
+        const record = buildCurrentRecord();
+        db[key] = record;
         saveAllUsersDB(db);
+        updateHUD();
+        if (!options.skipCloud && isCloudEnabled()) {
+          return scheduleCloudSync(key, record, Boolean(options.debounceCloud));
+        }
+      } else {
+        updateHUD();
       }
-      updateHUD();
+      return Promise.resolve(false);
     }
 
     function getQuestionDraft(qId) {
@@ -2595,9 +2882,10 @@
       });
     }
 
-    function handleLockSubmit(e) {
+    async function handleLockSubmit(e) {
       e.preventDefault();
       const errBox = document.getElementById('lock-error-msg');
+      const submitBtn = document.getElementById('lock-submit-btn');
       const pass = document.getElementById('lock-pass-input').value.trim();
 
       if (lockRole === 'student') {
@@ -2639,13 +2927,32 @@
         currentSession = { role: 'admin', className: 'ALL', studentNo: '', name: '系統管理者' };
       }
 
-      playSFX('win');
       errBox.classList.add('hidden');
       saveSessionStorage();
-      loadUserProgress();
+
+      if (isCloudEnabled()) {
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.textContent = '☁️ 正在讀取雲端紀錄...';
+        }
+        try {
+          await syncCurrentUserFromCloud(false);
+        } finally {
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '🚀 驗證並開始冒險';
+          }
+        }
+      } else {
+        loadUserProgress();
+      }
+
+      playSFX('win');
       renderQuestionList();
       document.getElementById('lock-screen').classList.add('hidden');
-      showToast(`🎉 歡迎進入訓練室，${currentSession.name}！`);
+      showToast(isCloudEnabled() && cloudStatusState === 'synced'
+        ? `☁️ 已同步雲端紀錄，歡迎回來，${currentSession.name}！`
+        : `🎉 歡迎進入訓練室，${currentSession.name}！`);
     }
 
     function enterAsGuest() {
@@ -2697,6 +3004,7 @@
         stats.classList.add('hidden');
       }
 
+      setCloudBadge(isCloudEnabled() ? cloudStatusState : 'local');
       document.getElementById('profile-modal').classList.remove('hidden');
     }
 
@@ -2704,9 +3012,22 @@
       document.getElementById('profile-modal').classList.add('hidden');
     }
 
-    function logoutAccount() {
+    async function logoutAccount() {
+      const logoutBtn = document.getElementById('profile-logout-btn');
       if (currentSession.role !== 'guest') {
-        saveProgress();
+        if (isCloudEnabled() && logoutBtn) {
+          logoutBtn.disabled = true;
+          logoutBtn.textContent = '☁️ 正在儲存雲端紀錄...';
+        }
+        try {
+          await saveProgress();
+          await flushCloudSync();
+        } finally {
+          if (logoutBtn) {
+            logoutBtn.disabled = false;
+            logoutBtn.textContent = '🚪 登出並切換帳號';
+          }
+        }
       }
       const prevSession = { ...currentSession };
 
@@ -2891,6 +3212,7 @@
       if (stepNum === 3) {
         renderStep3(q);
       } else if (stepNum === 4) {
+        flushCloudSync();
         renderStep4(q);
       }
     }
@@ -3154,7 +3476,7 @@
         cnt.textContent = `${val.length}/10`;
         cnt.className = `font-pixel text-[10px] ${val.length >= 10 ? 'text-[#ff2a85]' : val.length >= 8 ? 'text-[#ffd700]' : 'text-slate-400'}`;
       }
-      saveProgress();
+      saveProgress({ debounceCloud: true });
     }
 
     function setQuickStance(text) {
@@ -3752,13 +4074,14 @@
     /* =====================================================================
 17. 老師／管理者進度總覽與 CSV 報表匯出
        ===================================================================== */
-    function openDashboardModal() {
+    async function openDashboardModal() {
       if (!isTeacherOrAdmin()) return;
       playSFX('blip');
 
       const titleEl = document.getElementById('dashboard-title');
       const filterWrap = document.getElementById('dashboard-class-filter-wrap');
       const filterSel = document.getElementById('dashboard-class-filter');
+      const refreshBtn = document.getElementById('dashboard-refresh-btn');
 
       if (currentSession.role === 'teacher') {
         titleEl.textContent = `📊 ${currentSession.className} 班學生練習進度總覽`;
@@ -3770,8 +4093,63 @@
         filterSel.value = 'ALL';
       }
 
+      if (refreshBtn) {
+        if (isCloudEnabled()) {
+          refreshBtn.classList.remove('hidden');
+        } else {
+          refreshBtn.classList.add('hidden');
+        }
+      }
+
       renderDashboardTable();
       document.getElementById('dashboard-modal').classList.remove('hidden');
+
+      if (isCloudEnabled()) {
+        await refreshDashboardFromCloud(false);
+      }
+    }
+
+    async function refreshDashboardFromCloud(showToastOnDone = true) {
+      if (!isCloudEnabled()) return;
+      const refreshBtn = document.getElementById('dashboard-refresh-btn');
+      const statsEl = document.getElementById('dashboard-summary-stats');
+      if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '☁️ 讀取中...';
+      }
+      if (statsEl) {
+        statsEl.textContent = '☁️ 正在從 Google Sheets 讀取全體學生最新進度...';
+      }
+
+      const res = await cloudGetAllUsers();
+      if (res && res.ok && res.records) {
+        const db = getAllUsersDB();
+        Object.entries(res.records).forEach(([k, cloudRec]) => {
+          if (!cloudRec) return;
+          const localRec = db[k];
+          const { rec: best } = pickBestRecord(localRec, cloudRec);
+          if (best) db[k] = best;
+        });
+        saveAllUsersDB(db);
+        setCloudBadge('synced');
+        renderDashboardTable();
+        if (showToastOnDone) {
+          playSFX('coin');
+          showToast('☁️ 已更新 Google Sheets 最新學生進度！');
+        }
+      } else {
+        setCloudBadge('error');
+        renderDashboardTable();
+        if (showToastOnDone) {
+          playSFX('wrong');
+          showToast('⚠️ 無法讀取雲端資料，目前顯示本機快取紀錄', '#ffd700');
+        }
+      }
+
+      if (refreshBtn) {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = '🔄 同步雲端';
+      }
     }
 
     function closeDashboardModal() {
@@ -3785,7 +4163,7 @@
         : (document.getElementById('dashboard-class-filter')?.value || 'ALL');
 
       return Object.values(db)
-        .filter(r => r && r.className && (filterCls === 'ALL' || r.className === filterCls))
+        .filter(r => r && !r.isStaff && r.className && (filterCls === 'ALL' || r.className === filterCls))
         .sort((a, b) => {
           if (a.className !== b.className) return a.className.localeCompare(b.className);
           return (Number(a.studentNo) || 0) - (Number(b.studentNo) || 0);
@@ -3903,12 +4281,25 @@
           document.getElementById('lock-screen').classList.add('hidden');
           loadUserProgress();
           renderQuestionList();
+          if (isCloudEnabled()) {
+            syncCurrentUserFromCloud(false);
+          }
         } else {
           updateHUD();
+          setCloudBadge(isCloudEnabled() ? 'synced' : 'local', isCloudEnabled() ? '☁️ 雲端就緒' : '💾 單機模式');
         }
       } catch (e) {
         updateHUD();
       }
+
+      // 關閉或重新整理分頁前盡力把尚未送出的草稿同步到雲端
+      window.addEventListener('beforeunload', () => {
+        if (pendingCloudPayload && isCloudEnabled()) {
+          const item = pendingCloudPayload;
+          pendingCloudPayload = null;
+          cloudSaveUser(item.key, item.record, true);
+        }
+      });
 
       // 點擊背景或按 Esc 關閉彈出視窗
       ['shop-modal', 'profile-modal', 'dashboard-modal'].forEach(id => {
